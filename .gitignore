@@ -1,0 +1,56 @@
+# 编译产物
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.dll
+
+# CMake build
+build/
+cmake-build-*/
+*.cmake
+
+# 可执行文件
+server_im
+client_send
+server_min
+test_codec
+protatic
+
+# MacOS debug symbols
+*.dSYM/
+
+# 日志和数据库
+*.log
+*.db
+server.pid
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Qt 相关
+qt_client/build/
+moc_*.cpp
+ui_*.h
+
+# Python 相关
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+
+# 本地测试文件
+test_*.py
+test_*.cpp
