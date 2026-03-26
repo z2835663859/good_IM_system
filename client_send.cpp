@@ -15,7 +15,7 @@ int main() {
   // 初始化服务器地址结构
   sockaddr_in addr{};
   addr.sin_family = AF_INET;                      // 使用 IPv4
-  addr.sin_port = htons(9000);                    // 端口号 9000（主机字节序转网络字节序）
+  addr.sin_port = htons(9999);                    // 端口号 9999（主机字节序转网络字节序）
   inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);// IP 地址转换为二进制格式
 
   // 连接到服务器，连接失败时打印错误并返回
