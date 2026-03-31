@@ -1,165 +1,48 @@
 #include "event_loop.hpp"
-#include <sys/event.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
-
+#include <iostream>
 namespace im {
-
 EventLoop::EventLoop() : running_(false) {
-  kq_fd_ = kqueue();
-  if (kq_fd_ < 0) {
-    perror("kqueue");
-    throw std::runtime_error("Failed to create kqueue");
-  }
+  poll_fd_ = epoll_create1(0);
+  if (poll_fd_ < 0) { throw std::runtime_error("epoll failed"); }
 }
-
-EventLoop::~EventLoop() {
-  if (kq_fd_ >= 0) {
-    close(kq_fd_);
-  }
-}
-
+EventLoop::~EventLoop() { if (poll_fd_ >= 0) close(poll_fd_); }
 void EventLoop::add_handler(int fd, std::shared_ptr<EventHandler> handler, int events) {
-  if (!handler) return;
-
-  fd_to_handler_[fd] = handler;
-
-  struct kevent kev[2];
-  int cnt = 0;
-
-  // events 可以包含 EVFILT_READ 或 EVFILT_WRITE
-  if (events & EVFILT_READ) {
-    memset(&kev[cnt], 0, sizeof(struct kevent));
-    kev[cnt].ident = fd;
-    kev[cnt].filter = EVFILT_READ;
-    kev[cnt].flags = EV_ADD;
-    kev[cnt].udata = (void*)(uintptr_t)fd;
-    cnt++;
-  }
-
-  if (events & EVFILT_WRITE) {
-    memset(&kev[cnt], 0, sizeof(struct kevent));
-    kev[cnt].ident = fd;
-    kev[cnt].filter = EVFILT_WRITE;
-    kev[cnt].flags = EV_ADD;
-    kev[cnt].udata = (void*)(uintptr_t)fd;
-    cnt++;
-  }
-
-  if (cnt > 0 && kevent(kq_fd_, kev, cnt, nullptr, 0, nullptr) == -1) {
-    perror("kevent add");
-  }
+  if (!handler) return; fd_to_handler_[fd] = handler;
+  struct epoll_event ev; ev.data.fd = fd; ev.events = 0;
+  if (events & EVENT_READ) ev.events |= EPOLLIN;
+  if (events & EVENT_WRITE) ev.events |= EPOLLOUT;
+  epoll_ctl(poll_fd_, EPOLL_CTL_ADD, fd, &ev);
 }
-
 void EventLoop::mod_handler(int fd, int events) {
-  struct kevent kev[2];
-  int cnt = 0;
-
-  // 先删除旧事件
-  struct kevent rm_read, rm_write;
-  memset(&rm_read, 0, sizeof(struct kevent));
-  rm_read.ident = fd;
-  rm_read.filter = EVFILT_READ;
-  rm_read.flags = EV_DELETE;
-
-  memset(&rm_write, 0, sizeof(struct kevent));
-  rm_write.ident = fd;
-  rm_write.filter = EVFILT_WRITE;
-  rm_write.flags = EV_DELETE;
-
-  kevent(kq_fd_, &rm_read, 1, nullptr, 0, nullptr);
-  kevent(kq_fd_, &rm_write, 1, nullptr, 0, nullptr);
-
-  // 添加新事件
-  if (events & EVFILT_READ) {
-    memset(&kev[cnt], 0, sizeof(struct kevent));
-    kev[cnt].ident = fd;
-    kev[cnt].filter = EVFILT_READ;
-    kev[cnt].flags = EV_ADD;
-    kev[cnt].udata = (void*)(uintptr_t)fd;
-    cnt++;
-  }
-
-  if (events & EVFILT_WRITE) {
-    memset(&kev[cnt], 0, sizeof(struct kevent));
-    kev[cnt].ident = fd;
-    kev[cnt].filter = EVFILT_WRITE;
-    kev[cnt].flags = EV_ADD;
-    kev[cnt].udata = (void*)(uintptr_t)fd;
-    cnt++;
-  }
-
-  if (cnt > 0 && kevent(kq_fd_, kev, cnt, nullptr, 0, nullptr) == -1) {
-    perror("kevent mod");
-  }
+  struct epoll_event ev; ev.data.fd = fd; ev.events = 0;
+  if (events & EVENT_READ) ev.events |= EPOLLIN;
+  if (events & EVENT_WRITE) ev.events |= EPOLLOUT;
+  epoll_ctl(poll_fd_, EPOLL_CTL_MOD, fd, &ev);
 }
-
 void EventLoop::del_handler(int fd) {
-  auto it = fd_to_handler_.find(fd);
-  if (it != fd_to_handler_.end()) {
-    fd_to_handler_.erase(it);
-  }
-
-  struct kevent kev[2];
-  memset(&kev[0], 0, sizeof(struct kevent));
-  kev[0].ident = fd;
-  kev[0].filter = EVFILT_READ;
-  kev[0].flags = EV_DELETE;
-
-  memset(&kev[1], 0, sizeof(struct kevent));
-  kev[1].ident = fd;
-  kev[1].filter = EVFILT_WRITE;
-  kev[1].flags = EV_DELETE;
-
-  kevent(kq_fd_, kev, 2, nullptr, 0, nullptr);
+  epoll_ctl(poll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+  fd_to_handler_.erase(fd);
 }
-
 void EventLoop::run() {
-  running_ = true;
-
-  struct kevent events[64];
-  struct timespec timeout;
-  timeout.tv_sec = 1;
-  timeout.tv_nsec = 0;
-
+  running_ = true; const int MAX_EVENTS = 64; struct epoll_event events[MAX_EVENTS];
   while (running_) {
-    int n = kevent(kq_fd_, nullptr, 0, events, 64, &timeout);
-
-    if (n < 0) {
-      perror("kevent");
-      break;
-    }
-
-    for (int i = 0; i < n; i++) {
-      int fd = (int)(uintptr_t)events[i].ident;
+    int n = epoll_wait(poll_fd_, events, MAX_EVENTS, -1);
+    if (n < 0) { if (errno == EINTR) continue; break; }
+    for (int i = 0; i < n; ++i) {
+      int fd = events[i].data.fd;
       auto it = fd_to_handler_.find(fd);
-
       if (it == fd_to_handler_.end()) continue;
-
-      auto handler = it->second;
-
-      if (events[i].filter == EVFILT_READ) {
-        if (events[i].flags & EV_ERROR) {
-          handler->handle_error();
-        } else {
-          handler->handle_read();
-        }
-      } else if (events[i].filter == EVFILT_WRITE) {
-        if (events[i].flags & EV_ERROR) {
-          handler->handle_error();
-        } else {
-          handler->handle_write();
-        }
-      }
+      auto handler = it->second; if (!handler) continue;
+      if (events[i].events & (EPOLLERR | EPOLLHUP)) { handler->handle_error(); continue; }
+      if (events[i].events & EPOLLIN) handler->handle_read();
+      if (events[i].events & EPOLLOUT) handler->handle_write();
     }
   }
 }
-
-void EventLoop::stop() {
-  running_ = false;
-}
-
+void EventLoop::stop() { running_ = false; }
 } // namespace im
